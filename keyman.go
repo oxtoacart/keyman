@@ -163,6 +163,7 @@ func (key *PrivateKey) TLSCertificateFor(
 
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 
 	// If name is an ip address, add it as an IP SAN
@@ -173,7 +174,7 @@ func (key *PrivateKey) TLSCertificateFor(
 
 	isSelfSigned := issuer == nil
 	if isSelfSigned {
-		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+		template.ExtKeyUsage = append(template.ExtKeyUsage, x509.ExtKeyUsageServerAuth)
 	}
 
 	// If it's a CA, add certificate signing
