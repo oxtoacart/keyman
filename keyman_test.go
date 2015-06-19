@@ -2,6 +2,7 @@ package keyman
 
 import (
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"net"
 	"os"
 	"testing"
@@ -74,4 +75,20 @@ func TestRoundTrip(t *testing.T) {
 	x509rt, err := LoadCertificateFromX509(cert.X509())
 	assert.NoError(t, err, "Unable to load certificate from X509")
 	assert.Equal(t, cert, x509rt, "X509 round tripped cert didn't match original")
+
+	template := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			Organization: []string{"Test Org"},
+			CommonName:   "test.org",
+		},
+	}
+	csr, err := pk2.CSR(template)
+	if assert.NoError(t, err, "Unable to create CSR") {
+		validUntil := time.Now().AddDate(2, 1, 1)
+		cert3, err := pk.CertificateForCSR(csr, cert, validUntil)
+		if assert.NoError(t, err, "Unable to create certificate for CSR") {
+			assert.Equal(t, template.Subject.Organization, cert3.X509().Subject.Organization)
+			assert.Equal(t, template.Subject.CommonName, cert3.X509().Subject.CommonName)
+		}
+	}
 }

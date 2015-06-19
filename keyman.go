@@ -21,6 +21,7 @@ const (
 	PEM_HEADER_PRIVATE_KEY = "RSA PRIVATE KEY"
 	PEM_HEADER_PUBLIC_KEY  = "RSA PRIVATE KEY"
 	PEM_HEADER_CERTIFICATE = "CERTIFICATE"
+	PEM_HEADER_CSR         = "CERTIFICATE REQUEST"
 )
 
 var (
@@ -35,6 +36,12 @@ type PrivateKey struct {
 // Certificate is a convenience wrapper for x509.Certificate
 type Certificate struct {
 	cert     *x509.Certificate
+	derBytes []byte
+}
+
+// CSR is a convenience wrapper for x509.CertificateRequest
+type CSR struct {
+	req      *x509.CertificateRequest
 	derBytes []byte
 }
 
@@ -267,7 +274,7 @@ func LoadCertificateFromPEMBytes(pemBytes []byte) (*Certificate, error) {
 // LoadCertificateFromX509 loads a Certificate from an x509.Certificate
 func LoadCertificateFromX509(cert *x509.Certificate) (*Certificate, error) {
 	pemBytes := pem.EncodeToMemory(&pem.Block{
-		Type:    "CERTIFICATE",
+		Type:    PEM_HEADER_CERTIFICATE,
 		Headers: nil,
 		Bytes:   cert.Raw,
 	})
@@ -354,6 +361,139 @@ func bytesToCert(derBytes []byte) (*Certificate, error) {
 
 func (cert *Certificate) pemBlock() *pem.Block {
 	return &pem.Block{Type: PEM_HEADER_CERTIFICATE, Bytes: cert.derBytes}
+}
+
+/*******************************************************************************
+ * CSR Functions
+ ******************************************************************************/
+
+// CSR creates a certificate request for this private key using the given
+// template.
+func (key *PrivateKey) CSR(template *x509.CertificateRequest) (*CSR, error) {
+	bytes, err := x509.CreateCertificateRequest(rand.Reader, template, key.rsaKey)
+	if err != nil {
+		return nil, err
+	}
+	return bytesToCSR(bytes)
+}
+
+// CertificateForCSR creates a Certificate for the given CSR, signed by this key
+// (acting as CA).
+func (key *PrivateKey) CertificateForCSR(csr *CSR, issuer *Certificate, validUntil time.Time) (*Certificate, error) {
+	template := &x509.Certificate{
+		Signature:          csr.req.Signature,
+		SignatureAlgorithm: csr.req.SignatureAlgorithm,
+
+		PublicKey:          csr.req.PublicKey,
+		PublicKeyAlgorithm: csr.req.PublicKeyAlgorithm,
+
+		Version:      csr.req.Version,
+		SerialNumber: new(big.Int).SetInt64(int64(time.Now().UnixNano())),
+		Subject:      csr.req.Subject,
+		NotBefore:    time.Now().AddDate(0, -1, 0),
+		NotAfter:     validUntil,
+
+		Extensions:      csr.req.Extensions,
+		ExtraExtensions: csr.req.ExtraExtensions,
+
+		DNSNames:       csr.req.DNSNames,
+		EmailAddresses: csr.req.EmailAddresses,
+		IPAddresses:    csr.req.IPAddresses,
+
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	return key.CertificateForKey(template, issuer, csr.req.PublicKey)
+}
+
+// LoadCSRFromFile loads a CSR from a PEM-encoded file
+func LoadCSRFromFile(filename string) (*CSR, error) {
+	csrData, err := ioutil.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("Unable to read CSR file from disk: %s", err)
+	}
+	return LoadCSRFromPEMBytes(csrData)
+}
+
+// LoadCSRFromPEMBytes loads a CertificateRequest from a byte array in PEM format
+func LoadCSRFromPEMBytes(pemBytes []byte) (*CSR, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("Unable to decode PEM encoded CSR")
+	}
+	return bytesToCSR(block.Bytes)
+}
+
+// LoadCSRFromX509 loads a CSR from an x509.CertificateRequest
+func LoadCSRFromX509(csr *x509.CertificateRequest) (*CSR, error) {
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:    PEM_HEADER_CSR,
+		Headers: nil,
+		Bytes:   csr.Raw,
+	})
+	return LoadCSRFromPEMBytes(pemBytes)
+}
+
+// X509 returns the x509 CertificateRequest underlying this CSR
+func (csr *CSR) X509() *x509.CertificateRequest {
+	return csr.req
+}
+
+// PEMEncoded encodes the CSR in PEM
+func (csr *CSR) PEMEncoded() (pemBytes []byte) {
+	return pem.EncodeToMemory(csr.pemBlock())
+}
+
+// WriteToFile writes the PEM-encoded CSR to a file.
+func (csr *CSR) WriteToFile(filename string) (err error) {
+	csrOut, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("Failed to open %s for writing: %s", filename, err)
+	}
+	defer csrOut.Close()
+	return pem.Encode(csrOut, csr.pemBlock())
+}
+
+func (csr *CSR) WriteToTempFile() (name string, err error) {
+	// Create a temp file containing the CSR
+	tempFile, err := ioutil.TempFile("", "tempCSR")
+	if err != nil {
+		return "", fmt.Errorf("Unable to create temp file: %s", err)
+	}
+	name = tempFile.Name()
+	err = csr.WriteToFile(name)
+	if err != nil {
+		return "", fmt.Errorf("Unable to save CSR to temp file: %s", err)
+	}
+	return
+}
+
+// WriteToDERFile writes the DER-encoded CSR to a file.
+func (csr *CSR) WriteToDERFile(filename string) (err error) {
+	csrOut, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("Failed to open %s for writing: %s", filename, err)
+	}
+	defer csrOut.Close()
+	_, err = csrOut.Write(csr.derBytes)
+	return err
+}
+
+func bytesToCSR(derBytes []byte) (*CSR, error) {
+	csr, err := x509.ParseCertificateRequest(derBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &CSR{csr, derBytes}, nil
+}
+
+func (csr *CSR) pemBlock() *pem.Block {
+	return &pem.Block{Type: PEM_HEADER_CSR, Bytes: csr.derBytes}
 }
 
 /*******************************************************************************
