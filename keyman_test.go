@@ -1,6 +1,7 @@
 package keyman
 
 import (
+	"crypto/x509"
 	"net"
 	"os"
 	"testing"
@@ -10,8 +11,10 @@ import (
 )
 
 const (
-	PK_FILE   = "testpk.pem"
-	CERT_FILE = "testcert.pem"
+	PK_FILE           = "testpk.pem"
+	PK_FILE_ENCRYPTED = "testpk_encrypted.pem"
+	CERT_FILE         = "testcert.pem"
+	PASSWD            = "mypassword"
 
 	ONE_WEEK  = 7 * 24 * time.Hour
 	TWO_WEEKS = ONE_WEEK * 2
@@ -30,6 +33,15 @@ func TestRoundTrip(t *testing.T) {
 	pk2, err := LoadPKFromFile(PK_FILE)
 	assert.NoError(t, err, "Unable to load PK")
 	assert.Equal(t, pk.PEMEncoded(), pk2.PEMEncoded(), "Loaded PK didn't match saved PK")
+
+	err = pk.WriteToFileEncrypted(PK_FILE_ENCRYPTED, []byte(PASSWD), x509.PEMCipherAES256)
+	assert.NoError(t, err, "Unable to save PK")
+
+	_, err = LoadPKFromFileEncrypted(PK_FILE_ENCRYPTED, []byte("wrongpassword"))
+	assert.Error(t, err, "Loading encrypted PK using wrong password should fail")
+	pk4, err := LoadPKFromFileEncrypted(PK_FILE_ENCRYPTED, []byte(PASSWD))
+	assert.NoError(t, err, "Unable to load encrypted PK")
+	assert.Equal(t, pk.PEMEncoded(), pk4.PEMEncoded(), "Loaded encrypted PK didn't match saved PK")
 
 	cert, err := pk.TLSCertificateFor("Test Org", "127.0.0.1", time.Now().Add(TWO_WEEKS), true, nil)
 	assert.NoError(t, err, "Unable to generate self-signed certificate")

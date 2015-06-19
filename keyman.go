@@ -52,8 +52,29 @@ func GeneratePK(bits int) (key *PrivateKey, err error) {
 	return
 }
 
-// LoadPKFromFile loads a PEM-encoded PrivateKey from a file
+// LoadPKFromFile loads a PEM-encoded PrivateKey from a file.
 func LoadPKFromFile(filename string) (key *PrivateKey, err error) {
+	block, err := loadPEMBlockFromFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	return privateKeyFromPEMBytes(block.Bytes)
+}
+
+// LoadPKFromFile loads a PEM-encoded encrypted PrivateKey from a file.
+func LoadPKFromFileEncrypted(filename string, password []byte) (key *PrivateKey, err error) {
+	block, err := loadPEMBlockFromFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	decrypted, err := x509.DecryptPEMBlock(block, password)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to decrypt PEM block: %v", err)
+	}
+	return privateKeyFromPEMBytes(decrypted)
+}
+
+func loadPEMBlockFromFile(filename string) (*pem.Block, error) {
 	privateKeyData, err := ioutil.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -65,7 +86,11 @@ func LoadPKFromFile(filename string) (key *PrivateKey, err error) {
 	if block == nil {
 		return nil, fmt.Errorf("Unable to decode PEM encoded private key data: %s", err)
 	}
-	rsaKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	return block, nil
+}
+
+func privateKeyFromPEMBytes(bytes []byte) (*PrivateKey, error) {
+	rsaKey, err := x509.ParsePKCS1PrivateKey(bytes)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to decode X509 private key data: %s", err)
 	}
@@ -77,6 +102,17 @@ func (key *PrivateKey) PEMEncoded() (pemBytes []byte) {
 	return pem.EncodeToMemory(key.pemBlock())
 }
 
+// PEMEncrypted encodes the PrivateKey in PEM and encrypts it with the given
+// password using the given cipher.
+func (key *PrivateKey) PEMEncrypted(password []byte, alg x509.PEMCipher) ([]byte, error) {
+	block := key.pemBlock()
+	encrypted, err := x509.EncryptPEMBlock(rand.Reader, block.Type, block.Bytes, password, alg)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to encrypt PEM block: %v", err)
+	}
+	return pem.EncodeToMemory(encrypted), nil
+}
+
 // WriteToFile writes the PEM-encoded PrivateKey to the given file
 func (key *PrivateKey) WriteToFile(filename string) (err error) {
 	keyOut, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
@@ -85,6 +121,25 @@ func (key *PrivateKey) WriteToFile(filename string) (err error) {
 	}
 	if err := pem.Encode(keyOut, key.pemBlock()); err != nil {
 		return fmt.Errorf("Unable to PEM encode private key: %s", err)
+	}
+	keyOut.Close()
+	return
+}
+
+// WriteToFile writes the PEM-encoded PrivateKey to the given file, encrypted
+// using the given password and cipher.
+func (key *PrivateKey) WriteToFileEncrypted(filename string, password []byte, alg x509.PEMCipher) (err error) {
+	keyOut, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("Failed to open %s for writing: %s", filename, err)
+	}
+	encrypted, err := key.PEMEncrypted(password, alg)
+	if err != nil {
+		return err
+	}
+	_, err = keyOut.Write(encrypted)
+	if err != nil {
+		return fmt.Errorf("Unable to write PEM to file: %s", err)
 	}
 	keyOut.Close()
 	return
